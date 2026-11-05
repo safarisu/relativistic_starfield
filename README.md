@@ -1,7 +1,7 @@
 # Relativistic Starfield
 ![Screenshot: the sky at 0.82c, with stars and constellation lines crowding towards the direction of travel](screenshot.png)
 
-Relatively simple Python script to simulate relativistic light aberration and the Doppler Effect.
+Python script to simulate relativistic light aberration and the Doppler Effect.
 
 It uses an actual star map from the Bright Stars Catalogue. The stars are classified according to their stellar type, from which their temperature is roughly inferred, and then converted into RGB color based on the algorithm by Tanner Helland.
 
@@ -49,8 +49,3 @@ python main.py
 - `constellation_processing.py` builds `constellation_lines.csv` from
   [d3-celestial](https://github.com/ofrohn/d3-celestial)'s constellation lines, matching each line
   endpoint to the nearest catalogue star. See [THIRD_PARTY_NOTICES.md](THIRD_PARTY_NOTICES.md) for its license.
-
-## Plans
-
-Moving the relativistic calculations into the vertex shader, which would allow much larger star
-catalogues. See [GPU_SHADER_PLAN.md](GPU_SHADER_PLAN.md).
