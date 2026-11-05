@@ -9,9 +9,10 @@ from pyrr import Matrix44
 WINDOW_WIDTH = 1280
 WINDOW_HEIGHT = 720
 FOV = 60
-SPEED_STEP = 0.002
+SPEED_RATE = 0.12  # speed control units per second (Up/Down arrows)
 MAX_SPEED = 0.99999
-MOVE_SPEED = 0.02
+TURN_RATE = 1.2  # radians per second (WASD)
+MAX_FRAME_DT = 0.1  # cap on a frame's time step, so a stall doesn't cause a big jump
 NUMBER_OF_STARS = 9110
 MIN_POINT_SIZE = 0.5
 MAX_POINT_SIZE = 2.3
@@ -265,7 +266,8 @@ class StarfieldWindow(pyglet.window.Window):
 
         self.keys = key.KeyStateHandler()
         self.push_handlers(self.keys)
-        pyglet.clock.schedule_interval(self.update, 1 / 60.0)
+        # Update once per drawn frame; movement is scaled by dt so it's the same at any frame rate
+        pyglet.clock.schedule(self.update)
 
         # Initialize labels in on_resize for correct positioning
         self.speed_label = pyglet.text.Label(
@@ -386,8 +388,10 @@ class StarfieldWindow(pyglet.window.Window):
         return f"RA: {ra_str}  DEC: {dec_str}"
 
     def update(self, dt):
+        dt = min(dt, MAX_FRAME_DT)
+
         # WASD rotates the camera: A/D yaw left/right, W/S pitch up/down
-        step = np.degrees(MOVE_SPEED)
+        step = np.degrees(TURN_RATE) * dt
         d_yaw = step * (self.keys[key.A] - self.keys[key.D])
         d_pitch = step * (self.keys[key.W] - self.keys[key.S])
         if d_yaw or d_pitch:
@@ -395,9 +399,9 @@ class StarfieldWindow(pyglet.window.Window):
 
         # Speed control with Up/Down arrows
         if self.keys[key.UP]:
-            self.speed_control = min(self.speed_control + SPEED_STEP, 1.0)
+            self.speed_control = min(self.speed_control + SPEED_RATE * dt, 1.0)
         if self.keys[key.DOWN]:
-            self.speed_control = max(self.speed_control - SPEED_STEP, 0.0)
+            self.speed_control = max(self.speed_control - SPEED_RATE * dt, 0.0)
             if self.speed_control == 0.0:
                 self.velocity_locked = False
         self.speed_fraction = MAX_SPEED * (1 - pow(1 - self.speed_control, self.speed_exponent))
@@ -514,4 +518,5 @@ class StarfieldWindow(pyglet.window.Window):
 
 if __name__ == "__main__":
     window = StarfieldWindow()
-    pyglet.app.run()
+    # interval=0 redraws as fast as possible; vsync (on by default) then limits it to the monitor's refresh rate
+    pyglet.app.run(0)
