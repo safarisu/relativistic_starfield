@@ -11,11 +11,52 @@ WINDOW_HEIGHT = 720
 FOV = 60
 SPEED_STEP = 0.002
 MAX_SPEED = 0.99999
-STAR_DISTANCE = 1
 MOVE_SPEED = 0.02
 NUMBER_OF_STARS = 9110
 MIN_POINT_SIZE = 0.5
 MAX_POINT_SIZE = 2.3
+MAX_PITCH = 89.0
+
+
+def kelvin_to_rgb(temp_k, brightness):
+    """Approximate blackbody color for arrays of temperatures, scaled by brightness. Returns (N, 3) float32."""
+    temp = np.asarray(temp_k, dtype=np.float64) / 100
+    hot = temp > 66
+    with np.errstate(invalid="ignore", divide="ignore"):
+        red = np.where(hot, np.clip(329.70 * np.maximum(temp - 60, 1e-6) ** -0.1332, 0, 255), 255.0)
+        green = np.where(hot,
+                         np.clip(288.12 * np.maximum(temp - 60, 1e-6) ** -0.0755, 0, 255),
+                         np.clip(99.47 * np.log(temp) - 161.12, 0, 255))
+        blue = np.where(hot, 255.0,
+                        np.where(temp <= 19, 0.0, np.clip(138.52 * np.log(temp - 10) - 305.04, 0, 255)))
+    rgb = np.stack([red, green, blue], axis=1) / 255.0
+    return (rgb * np.asarray(brightness)[:, None]).astype(np.float32)
+
+
+def lorentz_gamma(beta):
+    return 1.0 / np.sqrt(1.0 - beta ** 2)
+
+
+def relativistic_transform(unit_dirs, v_hat, beta):
+    """Aberrate rest-frame star directions for an observer moving along v_hat at speed beta (in units of c).
+
+    Returns the observed unit directions (N, 3) and the per-star Doppler factor (N,).
+    """
+    gamma = lorentz_gamma(beta)
+    dot = np.sum(unit_dirs * v_hat, axis=1, keepdims=True)
+
+    factor = (1 - beta ** 2) / (1 + beta * dot)
+    aberrated = factor * (unit_dirs + (gamma - 1) * dot * v_hat + gamma * beta * v_hat)
+    observed = aberrated / np.linalg.norm(aberrated, axis=1, keepdims=True)
+
+    doppler = gamma * (1 + beta * dot)
+    return observed, doppler.flatten()
+
+
+def camera_direction(yaw_deg, pitch_deg):
+    """Unit view vector for yaw (around +Z, from +X) and pitch (towards +Z), in degrees."""
+    yaw, pitch = np.radians(yaw_deg), np.radians(pitch_deg)
+    return np.array([np.cos(pitch) * np.cos(yaw), np.cos(pitch) * np.sin(yaw), np.sin(pitch)], dtype=np.float32)
 
 
 class StarfieldWindow(pyglet.window.Window):
@@ -63,11 +104,7 @@ class StarfieldWindow(pyglet.window.Window):
                 
                 // Create smooth circular falloff
                 float alpha = 1.0 - smoothstep(0.0, 0.5, dist);
-                
-                // Create glow effect
-                float glow = .0 - smoothstep(0.0, 0.4, dist);
-                float enhanced_glow = glow * (0.6 + brightness * 0.8);
-                
+
                 // Core star color
                 vec3 core_color = color * (0.8 + brightness * 0.7);
                 
@@ -123,9 +160,10 @@ class StarfieldWindow(pyglet.window.Window):
             """
         )
 
-        self.camera_front = np.array([1.0, 0.0, 0.0], dtype=np.float32)
+        self.yaw = 0.0
+        self.pitch = 0.0
+        self.camera_front = camera_direction(self.yaw, self.pitch)
         self.camera_up = np.array([0.0, 0.0, 1.0], dtype=np.float32)
-        self.camera_right = np.cross(self.camera_front, self.camera_up)
 
         self.velocity_dir = np.array([0.0, 0.0, -1.0], dtype=np.float32)
         self.speed_fraction = 0.0
@@ -136,8 +174,6 @@ class StarfieldWindow(pyglet.window.Window):
         # New toggles
         self.show_velocity_markers = False
 
-        self.yaw = -90.0
-        self.pitch = 0.0
         self.set_exclusive_mouse(True)
         self.set_mouse_visible(False)
         self.left_mouse_held = False
@@ -154,9 +190,7 @@ class StarfieldWindow(pyglet.window.Window):
         self.star_temperatures = df['Temp_K'].values
         self.star_magnitudes = df['MAG'].values
         
-        # Get magnitude range
         mag_min = np.min(self.star_magnitudes)
-        mag_max = np.max(self.star_magnitudes)
         
         # Convert magnitudes to linear brightness (brighter stars = higher value)
         linear_brightness = 2.512 ** (mag_min - self.star_magnitudes)
@@ -178,26 +212,7 @@ class StarfieldWindow(pyglet.window.Window):
         self.star_brightness = np.clip(self.star_brightness * global_brightness, 0.0, 1.0)
         
         self.star_brightness = self.star_brightness.astype(np.float32)
-        
-        # Store original brightness values for reference
-        self.original_max_brightness = np.max(self.star_brightness)
-        self.base_star_brightness = self.star_brightness.copy()
 
-        def kelvin_to_rgb(temp_k, brightness):
-            # Vectorized over all stars: temp_k and brightness are arrays of shape (N,)
-            temp = np.asarray(temp_k, dtype=np.float64) / 100
-            hot = temp > 66
-            with np.errstate(invalid="ignore", divide="ignore"):
-                red = np.where(hot, np.clip(329.70 * np.maximum(temp - 60, 1e-6) ** -0.1332, 0, 255), 255.0)
-                green = np.where(hot,
-                                 np.clip(288.12 * np.maximum(temp - 60, 1e-6) ** -0.0755, 0, 255),
-                                 np.clip(99.47 * np.log(temp) - 161.12, 0, 255))
-                blue = np.where(hot, 255.0,
-                                np.where(temp <= 19, 0.0, np.clip(138.52 * np.log(temp - 10) - 305.04, 0, 255)))
-            rgb = np.stack([red, green, blue], axis=1) / 255.0
-            return (rgb * np.asarray(brightness)[:, None]).astype(np.float32)
-
-        self.kelvin_to_rgb = kelvin_to_rgb
         self.star_colors = kelvin_to_rgb(self.star_temperatures, self.star_brightness)
 
         brightness_column = self.star_brightness.reshape(-1, 1)
@@ -308,68 +323,12 @@ class StarfieldWindow(pyglet.window.Window):
         return f"RA: {ra_str}  DEC: {dec_str}"
 
     def update(self, dt):
-        # WASD controls for rotating camera_front
-        # Calculate right vector to move laterally
-        self.camera_right = np.cross(self.camera_front, self.camera_up)
-        self.camera_right /= np.linalg.norm(self.camera_right)
-
-        rotated = False
-
-        # Yaw rotation (around camera_up)
-        if self.keys[key.A]:
-            # Rotate left
-            angle = MOVE_SPEED
-            c, s = np.cos(angle), np.sin(angle)
-            front = self.camera_front
-            right = self.camera_right
-            self.camera_front = front * c - right * s
-            rotated = True
-        if self.keys[key.D]:
-            # Rotate right
-            angle = -MOVE_SPEED
-            c, s = np.cos(angle), np.sin(angle)
-            front = self.camera_front
-            right = self.camera_right
-            self.camera_front = front * c - right * s
-            rotated = True
-
-        # Pitch rotation (around camera_right)
-        if self.keys[key.W]:
-            angle = MOVE_SPEED
-            c, s = np.cos(angle), np.sin(angle)
-            front = self.camera_front
-            up = self.camera_up
-            right = self.camera_right
-            self.camera_front = front * c + up * s
-            rotated = True
-        if self.keys[key.S]:
-            angle = -MOVE_SPEED
-            c, s = np.cos(angle), np.sin(angle)
-            front = self.camera_front
-            up = self.camera_up
-            self.camera_front = front * c + up * s
-            rotated = True
-
-        if rotated:
-            self.camera_front /= np.linalg.norm(self.camera_front)
-
-            camera_up = np.array([0, 0, 1], dtype=np.float32)
-
-            # pitch is angle between camera_front and XY plane (around right vector)
-            # pitch = arcsin(z component in rotated coordinate system)
-
-            # Project front onto XY plane
-            front_xy = np.array([self.camera_front[0], self.camera_front[1], 0])
-            front_xy_norm = np.linalg.norm(front_xy)
-            if front_xy_norm > 1e-6:
-                front_xy /= front_xy_norm
-            else:
-                front_xy = np.array([1.0, 0.0, 0.0])  # fallback
-
-            self.pitch = np.degrees(np.arcsin(self.camera_front[2]))  # z component
-
-            # yaw is angle of front_xy vector in XY plane:
-            self.yaw = np.degrees(np.arctan2(self.camera_front[1], self.camera_front[0]))
+        # WASD rotates the camera: A/D yaw left/right, W/S pitch up/down
+        step = np.degrees(MOVE_SPEED)
+        d_yaw = step * (self.keys[key.A] - self.keys[key.D])
+        d_pitch = step * (self.keys[key.W] - self.keys[key.S])
+        if d_yaw or d_pitch:
+            self.rotate_camera(d_yaw, d_pitch)
 
         # Speed control with Up/Down arrows
         if self.keys[key.UP]:
@@ -384,42 +343,21 @@ class StarfieldWindow(pyglet.window.Window):
         self.clear()
         self.ctx.clear(0.0, 0.0, 0.0)
 
-        unit_dirs = self.star_positions 
-
         if self.speed_fraction > 0:
-            beta = self.speed_fraction
-            gamma = 1.0 / np.sqrt(1.0 - beta ** 2)
             v_hat = self.velocity_dir / np.linalg.norm(self.velocity_dir)
-            dot = np.sum(unit_dirs * v_hat, axis=1, keepdims=True)
+            positions, doppler = relativistic_transform(self.star_positions, v_hat, self.speed_fraction)
 
-            # Relativistic aberration
-            factor = (1 - beta ** 2) / (1 + beta * dot)
-            aberrated = factor * (unit_dirs + (gamma - 1) * dot * v_hat + gamma * beta * v_hat)
-            unit_dirs = aberrated / np.linalg.norm(aberrated, axis=1, keepdims=True)
-
-            # Doppler shift
-            doppler = gamma * (1 + beta * dot)
-            shifted_temperatures = self.star_temperatures * doppler.flatten()
-
-            # Brightness boost and gamma correction
-            brightness_boost = doppler.flatten() ** 0.4
-            boosted_brightness = self.star_brightness * brightness_boost
-
-            shifted_colors = self.kelvin_to_rgb(shifted_temperatures, boosted_brightness)
-
-            final_brightness = boosted_brightness
+            # Doppler shift and brightness boost
+            shifted_temperatures = self.star_temperatures * doppler
+            final_brightness = self.star_brightness * doppler ** 0.4
+            shifted_colors = kelvin_to_rgb(shifted_temperatures, final_brightness)
         else:
+            positions = self.star_positions
             shifted_colors = self.star_colors
             final_brightness = self.star_brightness
 
-        # Convert unit vectors to 3D positions
-        positions = unit_dirs
-        brightness_column = final_brightness.reshape(-1, 1)
-
-        # Prepare VBO data: pos (3f), color (3f), brightness (1f)
-        interleaved_data = np.hstack([positions, shifted_colors, brightness_column]).astype(np.float32)
-        sorted_indices = np.argsort(interleaved_data[:, -1])  # sort by brightness column
-        interleaved_data = interleaved_data[sorted_indices]
+        # VBO layout: pos (3f), color (3f), brightness (1f). Additive blending makes draw order irrelevant.
+        interleaved_data = np.hstack([positions, shifted_colors, final_brightness.reshape(-1, 1)]).astype(np.float32)
         self.vbo.write(interleaved_data.tobytes())
 
         # View-projection matrix
@@ -437,7 +375,7 @@ class StarfieldWindow(pyglet.window.Window):
             self.marker_vao.render(mode=moderngl.POINTS)
 
         # HUD: Speed, gamma, RA/Dec, FPS, Controls
-        gamma_val = 1.0 / np.sqrt(1.0 - self.speed_fraction ** 2) if self.speed_fraction > 0 else 1.0
+        gamma_val = lorentz_gamma(self.speed_fraction)
         self.speed_label.text = f"Speed: {self.speed_fraction:.4f}c"
         self.gamma_label.text = f"γ: {gamma_val:.4f}"
         self.speed_label.draw()
@@ -463,39 +401,13 @@ class StarfieldWindow(pyglet.window.Window):
             return
 
         sensitivity = 0.1
-        self.yaw += dx * sensitivity
-        self.pitch += -dy * sensitivity
-        self.pitch = max(-89.0, min(89.0, self.pitch))
+        self.rotate_camera(dx * sensitivity, -dy * sensitivity)
 
-        # Here:
-        # Yaw rotates around Z (camera_up)
-        # Pitch rotates around right axis (which is cross(camera_front, camera_up))
-
-        # Calculate camera right vector
-        camera_up = np.array([0, 0, 1], dtype=np.float32)
-        # We'll calculate front from yaw and pitch:
-
-        # Step 1: get horizontal direction from yaw (in XY plane)
-        yaw_rad = np.radians(self.yaw)
-        pitch_rad = np.radians(self.pitch)
-
-        # Horizontal direction in XY plane (no pitch yet)
-        horizontal = np.array([np.cos(yaw_rad), np.sin(yaw_rad), 0], dtype=np.float32)
-
-        # Now apply pitch by rotating horizontal vector towards up (Z)
-        # Pitch rotates camera front around right vector = cross(horizontal, up)
-        right = np.cross(horizontal, camera_up)
-        right /= np.linalg.norm(right)
-
-        # Rotate horizontal vector by pitch around right axis
-        def rotate_vector(vec, axis, angle_rad):
-            axis = axis / np.linalg.norm(axis)
-            cos_ang = np.cos(angle_rad)
-            sin_ang = np.sin(angle_rad)
-            return vec * cos_ang + np.cross(axis, vec) * sin_ang + axis * np.dot(axis, vec) * (1 - cos_ang)
-
-        front = rotate_vector(horizontal, right, pitch_rad)
-        self.camera_front = front / np.linalg.norm(front)
+    def rotate_camera(self, d_yaw, d_pitch):
+        """Shared by mouse and keyboard: adjust yaw/pitch in degrees and recompute the view direction."""
+        self.yaw = (self.yaw + d_yaw) % 360.0
+        self.pitch = float(np.clip(self.pitch + d_pitch, -MAX_PITCH, MAX_PITCH))
+        self.camera_front = camera_direction(self.yaw, self.pitch)
 
     def on_key_press(self, symbol, modifiers):
         if symbol == key.SPACE:
