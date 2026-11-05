@@ -13,7 +13,7 @@ SPEED_STEP = 0.002
 MAX_SPEED = 0.99999
 STAR_DISTANCE = 1
 MOVE_SPEED = 0.02
-NUMBER_OF_STARS = 3500
+NUMBER_OF_STARS = 9110
 MIN_POINT_SIZE = 0.5
 MAX_POINT_SIZE = 2.3
 
@@ -183,23 +183,22 @@ class StarfieldWindow(pyglet.window.Window):
         self.original_max_brightness = np.max(self.star_brightness)
         self.base_star_brightness = self.star_brightness.copy()
 
-        def kelvin_to_rgb(temp_k, brightness=1.0):
-            temp = temp_k / 100
-            if temp <= 66:
-                red = 255
-                green = np.clip(99.47 * np.log(temp) - 161.12, 0, 255)
-                blue = 0 if temp <= 19 else np.clip(138.52 * np.log(temp - 10) - 305.04, 0, 255)
-            else:
-                red = np.clip(329.70 * ((temp - 60) ** -0.1332), 0, 255)
-                green = np.clip(288.12 * ((temp - 60) ** -0.0755), 0, 255)
-                blue = 255
-                
-            return np.array([red, green, blue]) / 255.0 * brightness
+        def kelvin_to_rgb(temp_k, brightness):
+            # Vectorized over all stars: temp_k and brightness are arrays of shape (N,)
+            temp = np.asarray(temp_k, dtype=np.float64) / 100
+            hot = temp > 66
+            with np.errstate(invalid="ignore", divide="ignore"):
+                red = np.where(hot, np.clip(329.70 * np.maximum(temp - 60, 1e-6) ** -0.1332, 0, 255), 255.0)
+                green = np.where(hot,
+                                 np.clip(288.12 * np.maximum(temp - 60, 1e-6) ** -0.0755, 0, 255),
+                                 np.clip(99.47 * np.log(temp) - 161.12, 0, 255))
+                blue = np.where(hot, 255.0,
+                                np.where(temp <= 19, 0.0, np.clip(138.52 * np.log(temp - 10) - 305.04, 0, 255)))
+            rgb = np.stack([red, green, blue], axis=1) / 255.0
+            return (rgb * np.asarray(brightness)[:, None]).astype(np.float32)
 
         self.kelvin_to_rgb = kelvin_to_rgb
-        self.star_colors = np.array([
-            kelvin_to_rgb(t, b) for t, b in zip(self.star_temperatures, self.star_brightness)
-        ], dtype=np.float32)
+        self.star_colors = kelvin_to_rgb(self.star_temperatures, self.star_brightness)
 
         brightness_column = self.star_brightness.reshape(-1, 1)
         vertex_data = np.hstack((self.star_positions, self.star_colors, brightness_column)).astype(np.float32)
@@ -406,10 +405,7 @@ class StarfieldWindow(pyglet.window.Window):
             brightness_boost = doppler.flatten() ** 0.4
             boosted_brightness = self.star_brightness * brightness_boost
 
-            shifted_colors = np.array([
-                self.kelvin_to_rgb(t, b)
-                for t, b in zip(shifted_temperatures, boosted_brightness)
-            ], dtype=np.float32)
+            shifted_colors = self.kelvin_to_rgb(shifted_temperatures, boosted_brightness)
 
             final_brightness = boosted_brightness
         else:
