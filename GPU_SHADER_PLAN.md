@@ -35,6 +35,16 @@ Pass color and brightness to the fragment shader as now. The fragment shader is 
   `if self.speed_fraction > 0` branch.
 - Velocity markers and the HUD are unaffected.
 
+**Constellation lines:** the line VBO (rest-frame points, pre-subdivided along great circles)
+is also static. The line vertex shader applies the same aberration function as the star shader
+(no Doppler, since lines aren't light). Share the GLSL function between the two programs.
+
+**Draw order / blending:** pyglet's text labels call `glDisable(GL_BLEND)` after drawing, so in
+practice stars render without blending, and `on_draw` sorts them by brightness so the brightest
+are drawn last. A static VBO can't be re-sorted each frame. Before doing the GPU move, decide
+between re-enabling additive blending explicitly every frame (which makes order irrelevant, but
+changes how dense regions look), or using a depth test keyed on brightness.
+
 ## Precision (the important part)
 
 GPUs compute in float32. At `MAX_SPEED = 0.99999`, a straight port of the current formulas

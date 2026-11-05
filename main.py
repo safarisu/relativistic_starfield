@@ -16,6 +16,8 @@ NUMBER_OF_STARS = 9110
 MIN_POINT_SIZE = 0.5
 MAX_POINT_SIZE = 2.3
 MAX_PITCH = 89.0
+LINE_SUBDIVISIONS = 24
+CONSTELLATION_LINE_COLOR = (0.18, 0.26, 0.42)
 
 
 def kelvin_to_rgb(temp_k, brightness):
@@ -51,6 +53,14 @@ def relativistic_transform(unit_dirs, v_hat, beta):
 
     doppler = gamma * (1 + beta * dot)
     return observed, doppler.flatten()
+
+
+def great_circle_points(starts, ends, subdivisions):
+    """Evenly spaced points along the great-circle arc from each start to end unit vector. Returns (N, subdivisions + 1, 3)."""
+    starts, ends = starts.astype(np.float64), ends.astype(np.float64)
+    omega = np.arccos(np.clip(np.sum(starts * ends, axis=1), -1.0, 1.0))[:, None, None]
+    t = np.linspace(0.0, 1.0, subdivisions + 1)[None, :, None]
+    return (np.sin((1 - t) * omega) * starts[:, None, :] + np.sin(t * omega) * ends[:, None, :]) / np.sin(omega)
 
 
 def camera_direction(yaw_deg, pitch_deg):
@@ -160,6 +170,27 @@ class StarfieldWindow(pyglet.window.Window):
             """
         )
 
+        # Shaders for constellation lines
+        self.line_program = self.ctx.program(
+            vertex_shader="""
+            #version 330
+            uniform mat4 mvp;
+            in vec3 in_position;
+
+            void main() {
+                gl_Position = mvp * vec4(in_position, 1.0);
+            }
+            """,
+            fragment_shader="""
+            #version 330
+            out vec4 fragColor;
+
+            void main() {
+                fragColor = vec4(""" + ", ".join(f"{c}" for c in CONSTELLATION_LINE_COLOR) + """, 1.0);
+            }
+            """
+        )
+
         self.yaw = 0.0
         self.pitch = 0.0
         self.camera_front = camera_direction(self.yaw, self.pitch)
@@ -173,6 +204,7 @@ class StarfieldWindow(pyglet.window.Window):
         
         # New toggles
         self.show_velocity_markers = False
+        self.show_constellations = True
 
         self.set_exclusive_mouse(True)
         self.set_mouse_visible(False)
@@ -229,6 +261,8 @@ class StarfieldWindow(pyglet.window.Window):
         # Setup velocity marker VAO
         self.setup_velocity_markers()
 
+        self.setup_constellation_lines(df)
+
         self.keys = key.KeyStateHandler()
         self.push_handlers(self.keys)
         pyglet.clock.schedule_interval(self.update, 1 / 60.0)
@@ -282,6 +316,35 @@ class StarfieldWindow(pyglet.window.Window):
             [
                 (self.marker_vbo, '3f 3f', 'in_position', 'in_color')
             ]
+        )
+
+    def setup_constellation_lines(self, stars_df):
+        """Build constellation line geometry from constellation_lines.csv (pairs of HR numbers)."""
+        lines = pd.read_csv("constellation_lines.csv")
+        hr_to_index = pd.Series(stars_df.index, index=stars_df["HR"])
+        # Skip lines whose stars aren't loaded (NUMBER_OF_STARS smaller than the catalog)
+        lines = lines[lines["HR1"].isin(hr_to_index.index) & lines["HR2"].isin(hr_to_index.index)]
+
+        starts = self.star_positions[hr_to_index[lines["HR1"]].values]
+        ends = self.star_positions[hr_to_index[lines["HR2"]].values]
+        # Each line is subdivided along its great-circle arc, because aberration turns those arcs into curves
+        points = great_circle_points(starts, ends, LINE_SUBDIVISIONS)
+        self.line_positions = points.reshape(-1, 3).astype(np.float32)
+
+        # Index pairs (i, i + 1) along each subdivided line, rendered as GL_LINES
+        offsets = np.arange(len(lines))[:, None] * (LINE_SUBDIVISIONS + 1)
+        steps = np.arange(LINE_SUBDIVISIONS)
+        indices = np.stack([offsets + steps, offsets + steps + 1], axis=-1).astype('i4')
+
+        self.line_vbo = self.ctx.buffer(self.line_positions.tobytes())
+        self.line_ibo = self.ctx.buffer(indices.tobytes())
+        self.line_vao = self.ctx.vertex_array(
+            self.line_program,
+            [
+                (self.line_vbo, '3f', 'in_position')
+            ],
+            index_buffer=self.line_ibo,
+            index_element_size=4
         )
 
     def update_velocity_markers(self):
@@ -343,8 +406,8 @@ class StarfieldWindow(pyglet.window.Window):
         self.clear()
         self.ctx.clear(0.0, 0.0, 0.0)
 
+        v_hat = self.velocity_dir / np.linalg.norm(self.velocity_dir)
         if self.speed_fraction > 0:
-            v_hat = self.velocity_dir / np.linalg.norm(self.velocity_dir)
             positions, doppler = relativistic_transform(self.star_positions, v_hat, self.speed_fraction)
 
             # Doppler shift and brightness boost
@@ -356,14 +419,27 @@ class StarfieldWindow(pyglet.window.Window):
             shifted_colors = self.star_colors
             final_brightness = self.star_brightness
 
-        # VBO layout: pos (3f), color (3f), brightness (1f). Additive blending makes draw order irrelevant.
+        # VBO layout: pos (3f), color (3f), brightness (1f).
+        # Sorted so brighter stars draw last: pyglet's labels leave GL blending disabled, so overlapping points overwrite.
         interleaved_data = np.hstack([positions, shifted_colors, final_brightness.reshape(-1, 1)]).astype(np.float32)
+        interleaved_data = interleaved_data[np.argsort(interleaved_data[:, -1])]
         self.vbo.write(interleaved_data.tobytes())
 
         # View-projection matrix
         view = Matrix44.look_at(np.zeros(3), self.camera_front, self.camera_up)
         proj = Matrix44.perspective_projection(FOV, self.width / self.height, 0.1, 2000.0)
         mvp = proj * view
+
+        # Draw constellation lines beneath the stars. They are not light, so only aberration applies, not Doppler.
+        if self.show_constellations:
+            line_positions = self.line_positions
+            if self.speed_fraction > 0:
+                line_positions, _ = relativistic_transform(line_positions, v_hat, self.speed_fraction)
+            self.line_vbo.write(line_positions.astype(np.float32).tobytes())
+            self.line_program['mvp'].write(mvp.astype('f4').tobytes())
+            # Opaque, so lines crowded together at high speed don't add up to a bright blob
+            self.ctx.disable(moderngl.BLEND)
+            self.line_vao.render(mode=moderngl.LINES)
 
         # Draw stars
         self.program['mvp'].write(mvp.astype('f4').tobytes())
@@ -421,6 +497,8 @@ class StarfieldWindow(pyglet.window.Window):
         elif symbol == key.M:
             # Toggle velocity markers
             self.show_velocity_markers = not self.show_velocity_markers
+        elif symbol == key.C:
+            self.show_constellations = not self.show_constellations
         elif symbol == key.R:
             # Reset simulation
             self.reset_simulation()
