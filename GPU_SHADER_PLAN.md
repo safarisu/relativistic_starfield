@@ -39,11 +39,11 @@ Pass color and brightness to the fragment shader as now. The fragment shader is 
 is also static. The line vertex shader applies the same aberration function as the star shader
 (no Doppler, since lines aren't light). Share the GLSL function between the two programs.
 
-**Draw order / blending:** pyglet's text labels call `glDisable(GL_BLEND)` after drawing, so in
-practice stars render without blending, and `on_draw` sorts them by brightness so the brightest
-are drawn last. A static VBO can't be re-sorted each frame. Before doing the GPU move, decide
-between re-enabling additive blending explicitly every frame (which makes order irrelevant, but
-changes how dense regions look), or using a depth test keyed on brightness.
+**Draw order / blending:** stars use additive blending, re-enabled every frame in `on_draw`,
+because pyglet's text labels call `glDisable(GL_BLEND)` after drawing. With additive blending,
+draw order is irrelevant, so a static VBO works. The `B` key switches to unblended drawing,
+which relies on a per-frame brightness sort. That can't be done with a static VBO, so either drop
+the toggle in the GPU version or use a depth test keyed on brightness for that mode.
 
 ## Precision (the important part)
 

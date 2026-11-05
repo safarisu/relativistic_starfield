@@ -206,6 +206,7 @@ class StarfieldWindow(pyglet.window.Window):
         # New toggles
         self.show_velocity_markers = False
         self.show_constellations = True
+        self.additive_blending = True
 
         self.set_exclusive_mouse(True)
         self.set_mouse_visible(False)
@@ -424,9 +425,10 @@ class StarfieldWindow(pyglet.window.Window):
             final_brightness = self.star_brightness
 
         # VBO layout: pos (3f), color (3f), brightness (1f).
-        # Sorted so brighter stars draw last: pyglet's labels leave GL blending disabled, so overlapping points overwrite.
         interleaved_data = np.hstack([positions, shifted_colors, final_brightness.reshape(-1, 1)]).astype(np.float32)
-        interleaved_data = interleaved_data[np.argsort(interleaved_data[:, -1])]
+        if not self.additive_blending:
+            # Without blending, overlapping points overwrite each other, so draw the brightest last
+            interleaved_data = interleaved_data[np.argsort(interleaved_data[:, -1])]
         self.vbo.write(interleaved_data.tobytes())
 
         # View-projection matrix
@@ -445,7 +447,13 @@ class StarfieldWindow(pyglet.window.Window):
             self.ctx.disable(moderngl.BLEND)
             self.line_vao.render(mode=moderngl.LINES)
 
-        # Draw stars
+        # Draw stars. Blend state is set every frame because pyglet's labels disable GL_BLEND after drawing.
+        if self.additive_blending:
+            # Overlapping starlight adds up, as real light does
+            self.ctx.enable(moderngl.BLEND)
+            self.ctx.blend_func = (moderngl.ONE, moderngl.ONE)
+        else:
+            self.ctx.disable(moderngl.BLEND)
         self.program['mvp'].write(mvp.astype('f4').tobytes())
         self.vao.render(mode=moderngl.POINTS)
 
@@ -503,6 +511,8 @@ class StarfieldWindow(pyglet.window.Window):
             self.show_velocity_markers = not self.show_velocity_markers
         elif symbol == key.C:
             self.show_constellations = not self.show_constellations
+        elif symbol == key.B:
+            self.additive_blending = not self.additive_blending
         elif symbol == key.R:
             # Reset simulation
             self.reset_simulation()
