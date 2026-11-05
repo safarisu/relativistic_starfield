@@ -81,4 +81,4 @@ def match_spectral_type(sptype):
 df["Temp_K"] = df["SpType"].apply(match_spectral_type)
 
 # You now have: df[["x", "y", "z", "Temp_K", "Mag"]] for simulation
-df.to_csv("bright_stars2.csv", index=False)
+df.to_csv("bright_stars.csv", index=False)
