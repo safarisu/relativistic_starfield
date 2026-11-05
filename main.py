@@ -20,6 +20,20 @@ MAX_PITCH = 89.0
 LINE_SUBDIVISIONS = 24
 CONSTELLATION_LINE_COLOR = (0.18, 0.26, 0.42)
 
+INSTRUCTIONS = [
+    "Controls",
+    "  Left drag / WASD   look around",
+    "  Up / Down          speed up / slow down",
+    "  Space              travel in the view direction",
+    "  R                  reset speed and direction",
+    "  C                  constellation lines",
+    "  M                  direction markers (green ahead, red behind)",
+    "  B                  additive blending",
+    "  F                  fullscreen",
+    "  H                  show / hide these instructions",
+    "  Esc                quit",
+]
+
 
 def kelvin_to_rgb(temp_k, brightness):
     """Approximate blackbody color for arrays of temperatures, scaled by brightness. Returns (N, 3) float32."""
@@ -201,12 +215,12 @@ class StarfieldWindow(pyglet.window.Window):
         self.speed_fraction = 0.0
         self.speed_control = 0.0
         self.speed_exponent = 4.0
-        self.velocity_locked = False
         
         # New toggles
         self.show_velocity_markers = False
         self.show_constellations = True
         self.additive_blending = True
+        self.show_instructions = True
 
         self.set_exclusive_mouse(True)
         self.set_mouse_visible(False)
@@ -292,17 +306,18 @@ class StarfieldWindow(pyglet.window.Window):
             color=(255, 255, 255, 255)
         )
 
-        # # Add control instructions label
-        # self.controls_label = pyglet.text.Label(
-        #     text="Controls: M - Toggle velocity markers | R - Reset | SPACE - Lock velocity",
-        #     font_name="Consolas",
-        #     font_size=12,
-        #     x=10,
-        #     y=10,
-        #     anchor_x="left",
-        #     anchor_y="bottom",
-        #     color=(255, 255, 255, 200)
-        # )
+        self.instructions_label = pyglet.text.Label(
+            text="\n".join(INSTRUCTIONS),
+            font_name="Consolas",
+            font_size=11,
+            x=10,
+            y=self.height - 70,
+            width=700,
+            multiline=True,
+            anchor_x="left",
+            anchor_y="top",
+            color=(255, 255, 255, 190)
+        )
 
     def setup_velocity_markers(self):
         """Setup VAO for velocity direction markers"""
@@ -352,17 +367,15 @@ class StarfieldWindow(pyglet.window.Window):
 
     def update_velocity_markers(self):
         """Update velocity marker positions"""
-        if self.velocity_locked:
-            marker_positions = np.array([self.velocity_dir, -self.velocity_dir], dtype=np.float32)
-            marker_colors = np.array([[0.0, 1.0, 0.0], [1.0, 0.0, 0.0]], dtype=np.float32)
-            marker_data = np.hstack([marker_positions, marker_colors]).astype(np.float32)
-            self.marker_vbo.write(marker_data.tobytes())
+        marker_positions = np.array([self.velocity_dir, -self.velocity_dir], dtype=np.float32)
+        marker_colors = np.array([[0.0, 1.0, 0.0], [1.0, 0.0, 0.0]], dtype=np.float32)
+        marker_data = np.hstack([marker_positions, marker_colors]).astype(np.float32)
+        self.marker_vbo.write(marker_data.tobytes())
 
     def reset_simulation(self):
         """Reset velocity and speed to zero"""
         self.speed_fraction = 0.0
         self.speed_control = 0.0
-        self.velocity_locked = False
         self.velocity_dir = np.array([0.0, 0.0, -1.0], dtype=np.float32)
         self.update_velocity_markers()
 
@@ -403,8 +416,6 @@ class StarfieldWindow(pyglet.window.Window):
             self.speed_control = min(self.speed_control + SPEED_RATE * dt, 1.0)
         if self.keys[key.DOWN]:
             self.speed_control = max(self.speed_control - SPEED_RATE * dt, 0.0)
-            if self.speed_control == 0.0:
-                self.velocity_locked = False
         self.speed_fraction = MAX_SPEED * (1 - pow(1 - self.speed_control, self.speed_exponent))
 
     def on_draw(self):
@@ -457,8 +468,8 @@ class StarfieldWindow(pyglet.window.Window):
         self.program['mvp'].write(mvp.astype('f4').tobytes())
         self.vao.render(mode=moderngl.POINTS)
 
-        # Draw velocity markers if enabled and velocity is locked
-        if self.show_velocity_markers and self.velocity_locked:
+        # Draw velocity markers: direction of travel (green) and directly behind (red)
+        if self.show_velocity_markers:
             self.marker_program['mvp'].write(mvp.astype('f4').tobytes())
             self.marker_vao.render(mode=moderngl.POINTS)
 
@@ -473,7 +484,8 @@ class StarfieldWindow(pyglet.window.Window):
         self.ra_dec_label.text = ra_dec_text
         self.ra_dec_label.draw()
 
-        # self.controls_label.draw()
+        if self.show_instructions:
+            self.instructions_label.draw()
         self.fps_display.draw()
 
     def on_mouse_press(self, x, y, button, modifiers):
@@ -500,7 +512,6 @@ class StarfieldWindow(pyglet.window.Window):
     def on_key_press(self, symbol, modifiers):
         if symbol == key.SPACE:
             self.velocity_dir = self.camera_front.copy()
-            self.velocity_locked = True
             self.update_velocity_markers()
         elif symbol == key.ESCAPE:
             self.close()
@@ -513,6 +524,8 @@ class StarfieldWindow(pyglet.window.Window):
             self.show_constellations = not self.show_constellations
         elif symbol == key.B:
             self.additive_blending = not self.additive_blending
+        elif symbol == key.H:
+            self.show_instructions = not self.show_instructions
         elif symbol == key.R:
             # Reset simulation
             self.reset_simulation()
@@ -523,6 +536,7 @@ class StarfieldWindow(pyglet.window.Window):
         # Update label positions on resize
         self.speed_label.y = height - 20
         self.gamma_label.y = height - 40
+        self.instructions_label.y = height - 70
         self.ra_dec_label.x = width - 10
 
 
